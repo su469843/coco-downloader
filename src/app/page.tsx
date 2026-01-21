@@ -235,7 +235,6 @@ export default function Home() {
           {/* Provider Selector */}
           <div className="flex justify-center mb-6 gap-3">
             {[
-              { id: 'all', name: '全网聚合' },
               { id: 'gequbao', name: '渠道1' },
               { id: 'qqmp3', name: '渠道2' }
             ].map((p) => (
