@@ -1,0 +1,118 @@
+name: Build Docker Image and Export as Artifact
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      image_name: ${{ steps.tag.outputs.image_name }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Generate image tag
+      id: tag
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          TAG=${GITHUB_REF#refs/tags/}
+        elif [[ "${{ github.ref }}" == refs/heads/* ]]; then
+          TAG=${GITHUB_REF#refs/heads/}
+          TAG=${TAG//\//-}
+        else
+          TAG="pr-${{ github.event.number }}"
+        fi
+        echo "tag=${TAG}" >> $GITHUB_OUTPUT
+        echo "image_name=coco-downloader:latest" >> $GITHUB_OUTPUT
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./coco-downloader
+        file: ./coco-downloader/Dockerfile
+        platforms: linux/amd64
+        push: false
+        tags: ${{ steps.tag.outputs.image_name }}
+        outputs: type=docker,dest=/tmp/coco-downloader.tar
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Upload Docker image as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: coco-downloader-${{ steps.tag.outputs.tag }}
+        path: /tmp/coco-downloader.tar
+        retention-days: 5
+
+    - name: Generate download instructions
+      run: |
+        echo "## 🐳 Docker Image Built Successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📥 Download and Load Instructions:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "1. **下载工件**: 在GitHub Actions页面点击 \`coco-downloader-${{ steps.tag.outputs.tag }}\` 下载tar文件" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "2. **加载和运行镜像**:" >> $GITHUB_STEP_SUMMARY
+        echo '```bash' >> $GITHUB_STEP_SUMMARY
+        echo "# 加载镜像到Docker" >> $GITHUB_STEP_SUMMARY
+        echo "docker load -i coco-downloader.tar" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "# 运行容器" >> $GITHUB_STEP_SUMMARY
+        echo "docker run -d -p 3000:3000 --name coco-downloader ${{ steps.tag.outputs.image_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "# 检查运行状态" >> $GITHUB_STEP_SUMMARY
+        echo "curl http://localhost:3000" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 镜像信息:" >> $GITHUB_STEP_SUMMARY
+        echo "- **镜像名称**: ${{ steps.tag.outputs.image_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **构建分支/标签**: ${{ steps.tag.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **平台**: linux/amd64" >> $GITHUB_STEP_SUMMARY
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download Docker image artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: coco-downloader-${{ needs.build.outputs.tag }}
+        path: /tmp
+
+    - name: Load and test Docker image
+      run: |
+        # 加载镜像
+        docker load -i /tmp/coco-downloader.tar
+        
+        # 获取镜像名称
+        IMAGE_NAME=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep coco-downloader | head -1)
+        echo "Testing image: $IMAGE_NAME"
+        
+        # 运行容器
+        docker run -d -p 3000:3000 --name test-container $IMAGE_NAME
+        
+        # 等待容器启动 (Next.js 可能需要一点时间编译/启动)
+        sleep 30
+        
+        # 测试根端点
+        curl -v http://localhost:3000/ || exit 1
+        
+        # 清理
+        docker stop test-container
+        docker rm test-container
+        
+        echo "✅ Docker镜像测试通过!"
